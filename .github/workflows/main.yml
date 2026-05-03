@@ -1,0 +1,39 @@
+name: Windows Composer Cache Gatherer
+
+on:
+  workflow_dispatch: # اجرای دستی
+
+jobs:
+  gather-cache:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Install Packages (Warmup)
+        run: |
+          # اینجا پروژه خود را بسازید یا پکیج‌های حجیم را نصب کنید
+          composer create-project laravel/laravel my-project --no-install
+          cd my-project
+          composer install --prefer-dist
+          # می‌توانید هر پکیج دیگری که مد نظر است را اینجا اضافه کنید
+
+      - name: Compress and Split Cache (7-Zip)
+        shell: pwsh
+        run: |
+          $cachePath = "$env:LOCALAPPDATA\Composer\files"
+          # فشرده‌سازی و تقسیم به پارت‌های 90 مگابایتی
+          # -v90m یعنی پارت‌های 90 مگابایتی بساز
+          7z a -v90m composer_cache_parts.7z "$cachePath\*"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: composer-windows-cache
+          path: composer_cache_parts.7z.*

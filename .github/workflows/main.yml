@@ -1,47 +1,106 @@
-name: Windows Composer Cache Gatherer
+name: Push Cache to Repo (Split & Commit)
 
 on:
   workflow_dispatch:
+    inputs:
+      cache_prefix:
+        description: 'نام پیشوند برای فایل‌های کش (مثلاً my-dev-cache)'
+        required: true
+        default: 'dev-environment-cache'
+
+permissions:
+  contents: write
 
 jobs:
-  gather-cache:
+  build-and-push:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Setup PHP and Composer
+      - name: Setup PHP and Node.js
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.3' # ارتقا به 8.3 برای حمایت از آخرین نسخه لاراول
+          php-version: '8.3'
           extensions: fileinfo, mbstring, openssl, pdo, mysql, bcmath, ctype, xml, zip, gd, intl
-          # فعال‌سازی اکستنشن‌های ضروری لاراول در فایل php.ini رانر
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Install Packages (Warmup)
+      - name: Fill Caches (Warmup)
         run: |
-          # استفاده از --no-scripts برای جلوگیری از اجرای دستورات آرتیسان قبل از نصب کامل
-          # استفاده از --ignore-platform-reqs برای اطمینان از دانلود شدن پکیج‌ها تحت هر شرایطی
-          composer create-project laravel/laravel my-project --no-install --no-scripts
-          
-          cd my-project
-          
-          # دانلود پکیج‌ها بدون اجرای اسکریپت‌ها (فقط برای پر کردن پوشه Cache)
+          # پر کردن کش کامپوزر با یک پروژه نمونه (می‌توانید لیست خود را اضافه کنید)
+          composer create-project laravel/laravel temp-composer-project --no-install --no-scripts
+          cd temp-composer-project
           composer install --prefer-dist --no-scripts --no-progress
+          cd ..
+          
+          # پر کردن کش NPM
+          npm install -g next tailwindcss typescript
 
-      - name: Compress and Split Cache (7-Zip)
+      - name: Compress and Split Caches
         shell: pwsh
         run: |
-          $cachePath = "$env:LOCALAPPDATA\Composer\files"
-          if (Test-Path $cachePath) {
-              7z a -v90m composer_cache_parts.7z "$cachePath\*"
-          } else {
-              Write-Error "Cache directory not found!"
-              exit 1
+          $prefix = "${{ github.event.inputs.cache_prefix }}"
+          $composerCache = "$env:LOCALAPPDATA\Composer\files"
+          $npmCache = "$env:AppData\npm-cache"
+
+          # فشرده‌سازی و تکه‌تکه کردن کش کامپوزر (تکه‌های 85 مگابایتی)
+          if (Test-Path $composerCache) {
+              7z a -v85m "${prefix}_composer.7z" "$composerCache\*"
           }
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: composer-windows-cache
-          path: composer_cache_parts.7z.*
+          # فشرده‌سازی و تکه‌تکه کردن کش NPM
+          if (Test-Path $npmCache) {
+              7z a -v85m "${prefix}_npm.7z" "$npmCache\*"
+          }
+
+      - name: Configure Git
+        shell: pwsh
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # استفاده از توکن برای دسترسی Push
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+
+      - name: Commit and Push to Repo
+        shell: pwsh
+        run: |
+          $prefix = "${{ github.event.inputs.cache_prefix }}"
+          
+          # اضافه کردن فایل‌های تکه‌تکه شده به گیت
+          git add "${prefix}_composer.7z.*"
+          git add "${prefix}_npm.7z.*"
+
+          # چک کردن تغییرات برای کامیت
+          $diff = git diff --staged --quiet
+          if ($LASTEXITCODE -ne 0) {
+              git commit -m "Add split cache chunks for ${prefix}"
+              
+              # حلقه تکرار برای Push موفق (مشابه نمونه شما)
+              $push_success = $false
+              for ($i = 1; $i -le 15; $i++) {
+                  Write-Host "Attempt $i to push changes..."
+                  git push origin HEAD
+                  if ($LASTEXITCODE -eq 0) {
+                      $push_success = $true
+                      break
+                  }
+                  Write-Host "Push failed. Retrying in 20s..."
+                  Start-Sleep -Seconds 20
+                  git fetch origin
+                  git rebase origin/main # یا نام برنچ اصلی شما
+              }
+
+              if (-not $push_success) {
+                  Write-Host "Normal push failed. Trying force push..."
+                  git push origin HEAD --force
+              }
+          } else {
+              Write-Host "No new cache files to commit."
+          }

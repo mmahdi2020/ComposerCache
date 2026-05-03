@@ -1,7 +1,7 @@
 name: Windows Composer Cache Gatherer
 
 on:
-  workflow_dispatch: # اجرای دستی
+  workflow_dispatch:
 
 jobs:
   gather-cache:
@@ -14,23 +14,31 @@ jobs:
       - name: Setup PHP and Composer
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: '8.3' # ارتقا به 8.3 برای حمایت از آخرین نسخه لاراول
+          extensions: fileinfo, mbstring, openssl, pdo, mysql, bcmath, ctype, xml, zip, gd, intl
+          # فعال‌سازی اکستنشن‌های ضروری لاراول در فایل php.ini رانر
 
       - name: Install Packages (Warmup)
         run: |
-          # اینجا پروژه خود را بسازید یا پکیج‌های حجیم را نصب کنید
-          composer create-project laravel/laravel my-project --no-install
+          # استفاده از --no-scripts برای جلوگیری از اجرای دستورات آرتیسان قبل از نصب کامل
+          # استفاده از --ignore-platform-reqs برای اطمینان از دانلود شدن پکیج‌ها تحت هر شرایطی
+          composer create-project laravel/laravel my-project --no-install --no-scripts
+          
           cd my-project
-          composer install --prefer-dist
-          # می‌توانید هر پکیج دیگری که مد نظر است را اینجا اضافه کنید
+          
+          # دانلود پکیج‌ها بدون اجرای اسکریپت‌ها (فقط برای پر کردن پوشه Cache)
+          composer install --prefer-dist --no-scripts --no-progress
 
       - name: Compress and Split Cache (7-Zip)
         shell: pwsh
         run: |
           $cachePath = "$env:LOCALAPPDATA\Composer\files"
-          # فشرده‌سازی و تقسیم به پارت‌های 90 مگابایتی
-          # -v90m یعنی پارت‌های 90 مگابایتی بساز
-          7z a -v90m composer_cache_parts.7z "$cachePath\*"
+          if (Test-Path $cachePath) {
+              7z a -v90m composer_cache_parts.7z "$cachePath\*"
+          } else {
+              Write-Error "Cache directory not found!"
+              exit 1
+          }
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

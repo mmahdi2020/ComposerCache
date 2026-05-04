@@ -49,7 +49,7 @@ jobs:
           
           # آدرس‌های حیاتی در ویندوز
           $composerFullDir = "$env:LOCALAPPDATA\Composer"
-          $npmFullDir = "$env:AppData\npm-cache"
+          $npmFullDir = "$env:LOCALAPPDATA\npm-cache"
 
           Write-Host "Archiving Composer from: $composerFullDir"
           # فشرده‌سازی کل پوشه Composer (شامل repo, files, vcs و غیره)

@@ -1,27 +1,25 @@
-name: Push Cache to Repo (Split & Commit)
+name: Full Cache Transfer (Composer & NPM)
 
 on:
   workflow_dispatch:
     inputs:
-      cache_prefix:
-        description: 'نام پیشوند برای فایل‌های کش (مثلاً my-dev-cache)'
+      project_name:
+        description: 'نام پروژه برای نام‌گذاری فایل‌ها'
         required: true
-        default: 'dev-environment-cache'
+        default: 'full-dev-stack'
 
 permissions:
   contents: write
 
 jobs:
-  build-and-push:
+  gather-all-data:
     runs-on: windows-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Setup PHP and Node.js
+      - name: Setup Environment (PHP 8.3 & Node 20)
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
@@ -32,32 +30,37 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Fill Caches (Warmup)
+      - name: Fill Caches (Maximum Warmup)
+        # اینجا پکیج‌های حجیم و متادیتای آن‌ها را لود می‌کنیم
         run: |
-          # پر کردن کش کامپوزر با یک پروژه نمونه (می‌توانید لیست خود را اضافه کنید)
-          composer create-project laravel/laravel temp-composer-project --no-install --no-scripts
-          cd temp-composer-project
+          # کش کردن لاراول و تمام وابستگی‌های استاندارد
+          composer create-project laravel/laravel warmup-project --no-install --no-scripts
+          cd warmup-project
           composer install --prefer-dist --no-scripts --no-progress
           cd ..
           
-          # پر کردن کش NPM
-          npm install -g next tailwindcss typescript
+          # کش کردن ابزارهای NPM (می‌توانید لیست را طولانی‌تر کنید)
+          npm install -g next react react-dom tailwindcss typescript vite
 
-      - name: Compress and Split Caches
+      - name: Archive Everything (Full Metadata & Files)
         shell: pwsh
         run: |
-          $prefix = "${{ github.event.inputs.cache_prefix }}"
-          $composerCache = "$env:LOCALAPPDATA\Composer\files"
-          $npmCache = "$env:AppData\npm-cache"
+          $prefix = "${{ github.event.inputs.project_name }}"
+          
+          # آدرس‌های حیاتی در ویندوز
+          $composerFullDir = "$env:LOCALAPPDATA\Composer"
+          $npmFullDir = "$env:AppData\npm-cache"
 
-          # فشرده‌سازی و تکه‌تکه کردن کش کامپوزر (تکه‌های 85 مگابایتی)
-          if (Test-Path $composerCache) {
-              7z a -v85m "${prefix}_composer.7z" "$composerCache\*"
+          Write-Host "Archiving Composer from: $composerFullDir"
+          # فشرده‌سازی کل پوشه Composer (شامل repo, files, vcs و غیره)
+          if (Test-Path $composerFullDir) {
+              7z a -v85m "${prefix}_composer_full.7z" "$composerFullDir\*"
           }
 
-          # فشرده‌سازی و تکه‌تکه کردن کش NPM
-          if (Test-Path $npmCache) {
-              7z a -v85m "${prefix}_npm.7z" "$npmCache\*"
+          Write-Host "Archiving NPM Cache from: $npmFullDir"
+          # فشرده‌سازی کل پوشه npm-cache
+          if (Test-Path $npmFullDir) {
+              7z a -v85m "${prefix}_npm_full.7z" "$npmFullDir\*"
           }
 
       - name: Configure Git
@@ -65,42 +68,36 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # استفاده از توکن برای دسترسی Push
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
 
-      - name: Commit and Push to Repo
+      - name: Commit and Push Chunks (Robust Loop)
         shell: pwsh
         run: |
-          $prefix = "${{ github.event.inputs.cache_prefix }}"
+          $prefix = "${{ github.event.inputs.project_name }}"
           
-          # اضافه کردن فایل‌های تکه‌تکه شده به گیت
-          git add "${prefix}_composer.7z.*"
-          git add "${prefix}_npm.7z.*"
+          # اضافه کردن تمام پارت‌های ساخته شده
+          git add "${prefix}_composer_full.7z.*"
+          git add "${prefix}_npm_full.7z.*"
 
-          # چک کردن تغییرات برای کامیت
-          $diff = git diff --staged --quiet
-          if ($LASTEXITCODE -ne 0) {
-              git commit -m "Add split cache chunks for ${prefix}"
+          $status = git status --porcelain
+          if ($status) {
+              git commit -m "Upload complete cache metadata and files for ${prefix}"
               
-              # حلقه تکرار برای Push موفق (مشابه نمونه شما)
               $push_success = $false
               for ($i = 1; $i -le 15; $i++) {
-                  Write-Host "Attempt $i to push changes..."
-                  git push origin HEAD
+                  Write-Host "Attempt $i to push..."
+                  # استفاده از --force برای اطمینان در صورت تداخل با رانرهای قبلی
+                  git push origin HEAD --force 
                   if ($LASTEXITCODE -eq 0) {
                       $push_success = $true
                       break
                   }
-                  Write-Host "Push failed. Retrying in 20s..."
+                  Write-Host "Push failed. Waiting 20s..."
                   Start-Sleep -Seconds 20
                   git fetch origin
-                  git rebase origin/main # یا نام برنچ اصلی شما
+                  git rebase origin/main
               }
-
-              if (-not $push_success) {
-                  Write-Host "Normal push failed. Trying force push..."
-                  git push origin HEAD --force
-              }
+              if (-not $push_success) { exit 1 }
           } else {
-              Write-Host "No new cache files to commit."
+              Write-Host "Nothing to upload."
           }
